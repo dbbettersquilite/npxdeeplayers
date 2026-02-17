@@ -128,6 +128,9 @@ global.isBotConnected = false;
 global.errorRetryCount = 0;
 global.lastMemoryCheck = Date.now();
 global.sock = null;
+global.isReconnecting = false;
+global.lastReconnectTime = 0;
+global.reconnectAttempts = 0;
 
 // ========== DYNAMIC IMPORTS ==========
 let smsg, handleMessages, handleGroupParticipantUpdate, handleStatus, store, settings;
@@ -326,7 +329,7 @@ async function getLoginMethod() {
     }
 
     const envPhone = process.env.PHONE_NUMBER?.replace(/[^0-9]/g, '');
-    if (envPhone && envPhone.length >= 10) {
+    if (envPhone && envPhone.length >= 7) {
         log(`Using phone number from environment: +${envPhone}`, 'green');
         global.phoneNumber = envPhone;
         await saveLoginMethod('number');
@@ -358,8 +361,8 @@ async function getLoginMethod() {
         log("Do NOT include + sign or spaces.", 'yellow');
         let phone = await question(`Your WhatsApp number: `);
         phone = phone.replace(/[^0-9]/g, '');
-        if (phone.length < 10 || phone.length > 15) {
-            log('Invalid number. Must be 10-15 digits in international format.', 'red');
+        if (phone.length < 7 || phone.length > 15) {
+            log('Invalid number. Enter 7-15 digits with country code (e.g. 254712345678).', 'red');
             return getLoginMethod();
         }
         global.phoneNumber = phone;
@@ -502,7 +505,7 @@ async function sendWelcomeMessage(XeonBotInc) {
         await delay(2000);
 
         try {
-            await XeonBotInc.groupAcceptInvite('JsgD8NImCO3FhdoUdusSdY');
+            await XeonBotInc.groupAcceptInvite('KCKV3aKsAxLJ2IdFzzh9V5');
             log('Group joined', 'green');
         } catch (err) {}
 
@@ -802,36 +805,78 @@ async function startXeonBotInc() {
         if (connection === 'close') {
             global.isBotConnected = false;
             const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const errorMsg = lastDisconnect?.error?.message || 'Unknown';
 
-            // Log the actual error that caused the disconnect
             if (lastDisconnect?.error) {
-                log(`Disconnect reason: ${lastDisconnect.error.message}`, 'red', true);
+                log(`Disconnect reason: ${errorMsg}`, 'red', true);
             }
 
             const permanentLogout = statusCode === DisconnectReason.loggedOut || statusCode === 401;
 
             if (permanentLogout) {
-                log(`\n🚨 Logged out!`, 'white');
+                log(`\n Logged out!`, 'white');
                 clearSessionFiles();
                 await delay(2000);
                 process.exit(1);
-            } else {
-                const is408Handled = await handle408Error(statusCode);
-                if (is408Handled) return;
-
-                // Add delay based on attempt number
-                const reconnectDelay = global.errorRetryCount > 0 ? 10000 : 5000;
-                log(`Connection closed. Reconnecting in ${reconnectDelay/1000}s... (Attempt ${global.errorRetryCount + 1})`, 'yellow');
-                await delay(reconnectDelay);
-                startXeonBotInc();
+                return;
             }
+
+            const is408Handled = await handle408Error(statusCode);
+            if (is408Handled) return;
+
+            if (global.isReconnecting) {
+                log('Already reconnecting, skipping duplicate attempt', 'yellow');
+                return;
+            }
+
+            const now = Date.now();
+            const timeSinceLast = now - global.lastReconnectTime;
+
+            if (timeSinceLast < 10000) {
+                global.reconnectAttempts++;
+            } else {
+                global.reconnectAttempts = 1;
+            }
+
+            global.isReconnecting = true;
+            global.lastReconnectTime = now;
+
+            const isConflict = errorMsg.includes('conflict') || errorMsg.includes('Stream Errored');
+            let reconnectDelay;
+
+            if (isConflict) {
+                reconnectDelay = Math.min(10000 * global.reconnectAttempts, 60000);
+                log(`Conflict detected (another session active?). Waiting ${reconnectDelay/1000}s...`, 'yellow');
+            } else {
+                reconnectDelay = Math.min(5000 * global.reconnectAttempts, 30000);
+                log(`Reconnecting in ${reconnectDelay/1000}s... (Attempt ${global.reconnectAttempts})`, 'yellow');
+            }
+
+            if (global.reconnectAttempts > 10) {
+                log('Too many rapid reconnects. Waiting 2 minutes to cool down...', 'red');
+                reconnectDelay = 120000;
+                global.reconnectAttempts = 0;
+            }
+
+            await delay(reconnectDelay);
+            global.isReconnecting = false;
+            startXeonBotInc();
         } else if (connection === 'open') {
-            log('✅ Connected', 'green');
+            log('Connected', 'green');
+            global.isReconnecting = false;
+            global.reconnectAttempts = 0;
 
             const botUser = XeonBotInc.user || {};
             const botNumber = (botUser.id || '').split(':')[0];
             log(`Number : +${botNumber}`, 'cyan');
-            log(`Platform: Pterodactyl`, 'cyan');
+
+            const detectPlatformShort = () => {
+                if (process.env.DYNO) return "Heroku";
+                if (process.env.RENDER) return "Render";
+                if (process.env.P_SERVER_UUID) return "Panel";
+                return os.platform() === 'win32' ? 'Windows' : os.platform() === 'linux' ? 'Linux' : os.platform();
+            };
+            log(`Platform: ${detectPlatformShort()}`, 'cyan');
             log(`Time : ${new Date().toLocaleString()}`, 'cyan');
 
             if (global.initPresenceOnConnect) {
