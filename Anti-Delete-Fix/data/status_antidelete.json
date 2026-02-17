@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "mode": "private",
+  "captureMedia": true,
+  "maxStorageMB": 500,
+  "cleanupInterval": 60,
+  "autoCleanup": true,
+  "maxStatuses": 1000,
+  "notifyOwner": true,
+  "cleanRetrieved": true,
+  "maxAgeHours": 24
+}

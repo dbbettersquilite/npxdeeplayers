@@ -1,0 +1,17 @@
+{
+  "userGroupData.json": true,
+  "antidelete.json": true,
+  "antiedit.json": true,
+  "autoread.json": true,
+  "autotyping.json": true,
+  "autorecording.json": true,
+  "owner.json": true,
+  "banned.json": true,
+  "premium.json": true,
+  "warnings.json": true,
+  "autoStatus.json": true,
+  "prefix.json": true,
+  "botconfig.json": true,
+  "menuSettings.json": true,
+  "status_antidelete.json": true
+}
