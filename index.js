@@ -22,34 +22,58 @@ const { rmSync } = require('fs')
 // ========== FIXED CHALK IMPORT ==========
 let chalk;
 try {
+    // Try CommonJS import first
     chalk = require('chalk');
+    // Test if it works (chalk v4 has functions like .green)
     if (typeof chalk.green !== 'function') {
+        // Might be chalk v5+ with default export
         chalk = require('chalk').default || chalk;
     }
 } catch (e) {
+    // Ultimate fallback - dummy chalk that returns text unchanged
     chalk = {
-        green: (t) => t, red: (t) => t, yellow: (t) => t, blue: (t) => t,
-        magenta: (t) => t, cyan: (t) => t, white: (t) => t,
-        bgRed: { black: (t) => t }, bgGreen: { black: (t) => t },
-        bgBlue: { black: (t) => t }, bgYellow: { black: (t) => t },
-        hex: () => ({ bold: (t) => t }), bold: (t) => t
+        green: (t) => t,
+        red: (t) => t,
+        yellow: (t) => t,
+        blue: (t) => t,
+        magenta: (t) => t,
+        cyan: (t) => t,
+        white: (t) => t,
+        bgRed: { black: (t) => t },
+        bgGreen: { black: (t) => t },
+        bgBlue: { black: (t) => t },
+        bgYellow: { black: (t) => t },
+        hex: () => ({ bold: (t) => t }),
+        bold: (t) => t
     };
 }
 
+// Safe logging function that won't crash
 function log(message, color = 'white', isError = false) {
     try {
         const memMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
-        if (memMB > 250 && !isError && !message.includes('Connected')) return;
+        if (memMB > 250 && !isError && !message.includes('Connected')) {
+            return;
+        }
 
         const prefix = '[ DAVE - X ]';
         const logFunc = isError ? console.error : console.log;
+
+        // Safely apply color
         let coloredMessage = message;
         try {
-            if (chalk && chalk[color]) coloredMessage = chalk[color](message);
-            else if (chalk && chalk.hex && color.startsWith('#')) coloredMessage = chalk.hex(color)(message);
-        } catch (e) {}
+            if (chalk && chalk[color]) {
+                coloredMessage = chalk[color](message);
+            } else if (chalk && chalk.hex && color.startsWith('#')) {
+                coloredMessage = chalk.hex(color)(message);
+            }
+        } catch (e) {
+            // Ignore coloring errors
+        }
+
         logFunc(`${prefix} ${coloredMessage}`);
     } catch (e) {
+        // Ultimate fallback
         console.log(`[ DAVE - X ] ${message}`);
     }
 }
@@ -73,25 +97,37 @@ function isNoisyLog(...args) {
         if (a instanceof Error) return a.message;
         return typeof a === 'string' ? a : '';
     }).join(' ');
-    for (const pattern of noisyPatterns) if (str.includes(pattern)) return true;
+    for (const pattern of noisyPatterns) {
+        if (str.includes(pattern)) return true;
+    }
     return false;
 }
 
+// Console filtering
 const _origConsoleLog = console.log;
 const _origConsoleError = console.error;
 const _origConsoleWarn = console.warn;
 
-console.log = function(...args) { if (!isNoisyLog(...args)) _origConsoleLog.apply(console, args); };
-console.error = function(...args) { if (!isNoisyLog(...args)) _origConsoleError.apply(console, args); };
-console.warn = function(...args) { if (!isNoisyLog(...args)) _origConsoleWarn.apply(console, args); };
+console.log = function(...args) {
+    if (isNoisyLog(...args)) return;
+    _origConsoleLog.apply(console, args);
+};
+
+console.error = function(...args) {
+    if (isNoisyLog(...args)) return;
+    _origConsoleError.apply(console, args);
+};
+
+console.warn = function(...args) {
+    if (isNoisyLog(...args)) return;
+    _origConsoleWarn.apply(console, args);
+};
 
 // ========== GLOBALS ==========
 global.isBotConnected = false;
 global.errorRetryCount = 0;
 global.lastMemoryCheck = Date.now();
 global.sock = null;
-global.connectionAttempts = 0;
-const MAX_RETRIES = 3;
 
 // ========== DYNAMIC IMPORTS ==========
 let smsg, handleMessages, handleGroupParticipantUpdate, handleStatus, store, settings;
@@ -109,7 +145,8 @@ function loadStoredMessages() {
     try {
         if (fs.existsSync(MESSAGE_STORE_FILE)) {
             const data = fs.readFileSync(MESSAGE_STORE_FILE, 'utf-8');
-            return trimMessageBackup(JSON.parse(data));
+            const parsed = JSON.parse(data);
+            return trimMessageBackup(parsed);
         }
     } catch (error) {}
     return {};
@@ -118,25 +155,31 @@ function loadStoredMessages() {
 function trimMessageBackup(backup) {
     const now = Math.floor(Date.now() / 1000);
     const trimmed = {};
-    const chatIds = Object.keys(backup).slice(-MAX_BACKUP_CHATS);
-    for (const chatId of chatIds) {
+    const chatIds = Object.keys(backup);
+    const recentChats = chatIds.slice(-MAX_BACKUP_CHATS);
+    for (const chatId of recentChats) {
         const msgs = backup[chatId];
         if (!msgs || typeof msgs !== 'object') continue;
+        const msgIds = Object.keys(msgs);
         const kept = {};
-        const msgIds = Object.keys(msgs).slice(-MAX_BACKUP_MESSAGES_PER_CHAT);
-        for (const msgId of msgIds) {
+        const recent = msgIds.slice(-MAX_BACKUP_MESSAGES_PER_CHAT);
+        for (const msgId of recent) {
             const msg = msgs[msgId];
             if (msg && msg.timestamp && (now - msg.timestamp) <= MAX_BACKUP_AGE) {
                 kept[msgId] = msg;
             }
         }
-        if (Object.keys(kept).length > 0) trimmed[chatId] = kept;
+        if (Object.keys(kept).length > 0) {
+            trimmed[chatId] = kept;
+        }
     }
     return trimmed;
 }
 
 let _messageBackupDirty = false;
-function saveStoredMessages(data) { _messageBackupDirty = true; }
+function saveStoredMessages(data) {
+    _messageBackupDirty = true;
+}
 
 function _flushMessageBackup() {
     if (!_messageBackupDirty) return;
@@ -148,31 +191,42 @@ function _flushMessageBackup() {
 }
 setInterval(_flushMessageBackup, 120000);
 
-function getMemoryMB() { return Math.round(process.memoryUsage().rss / 1024 / 1024); }
+function getMemoryMB() {
+    return Math.round(process.memoryUsage().rss / 1024 / 1024);
+}
 
+// Memory cleanup
 function memoryCleanup() {
     const now = Date.now();
     if (now - global.lastMemoryCheck < 30000) return;
     global.lastMemoryCheck = now;
+
     const memMB = getMemoryMB();
 
     if (memMB > 250) {
         log(`[MEM] ${memMB}MB - cleaning up`, 'yellow');
         global.messageBackup = trimMessageBackup(global.messageBackup);
+
         if (memMB > 320) {
             log(`[MEM] Critical: ${memMB}MB - clearing caches`, 'red');
             global.messageBackup = {};
-            if (typeof store !== 'undefined' && store && store.messages) store.messages = {};
+
+            if (typeof store !== 'undefined' && store && store.messages) {
+                store.messages = {};
+            }
         }
+
         if (global.gc) global.gc();
     }
 }
 setInterval(memoryCleanup, 30000);
 
+// Error counter
 function loadErrorCount() {
     try {
         if (fs.existsSync(SESSION_ERROR_FILE)) {
-            return JSON.parse(fs.readFileSync(SESSION_ERROR_FILE, 'utf-8'));
+            const data = fs.readFileSync(SESSION_ERROR_FILE, 'utf-8');
+            return JSON.parse(data);
         }
     } catch (error) {
         log(`Error loading error count: ${error.message}`, 'red', true);
@@ -189,9 +243,14 @@ function saveErrorCount(data) {
 }
 
 function deleteErrorCountFile() {
-    try { if (fs.existsSync(SESSION_ERROR_FILE)) fs.unlinkSync(SESSION_ERROR_FILE); } catch (e) {}
+    try {
+        if (fs.existsSync(SESSION_ERROR_FILE)) {
+            fs.unlinkSync(SESSION_ERROR_FILE);
+        }
+    } catch (e) {}
 }
 
+// Session management
 const sessionDir = path.join(__dirname, 'session')
 const credsPath = path.join(sessionDir, 'creds.json')
 const loginFile = path.join(sessionDir, 'login.json')
@@ -210,6 +269,7 @@ function clearSessionFiles() {
     }
 }
 
+// Login persistence
 async function saveLoginMethod(method) {
     await fs.promises.mkdir(sessionDir, { recursive: true });
     await fs.promises.writeFile(loginFile, JSON.stringify({ method }, null, 2));
@@ -217,13 +277,17 @@ async function saveLoginMethod(method) {
 
 async function getLastLoginMethod() {
     if (fs.existsSync(loginFile)) {
-        return JSON.parse(fs.readFileSync(loginFile, 'utf-8')).method;
+        const data = JSON.parse(fs.readFileSync(loginFile, 'utf-8'));
+        return data.method;
     }
     return null;
 }
 
-function sessionExists() { return fs.existsSync(credsPath); }
+function sessionExists() {
+    return fs.existsSync(credsPath);
+}
 
+// Pairing code
 const rl = process.stdin.isTTY ? readline.createInterface({ input: process.stdin, output: process.stdout }) : null
 const question = (text) => rl ? new Promise(resolve => rl.question(text, resolve)) : Promise.resolve(settings?.ownerNumber || global.phoneNumber)
 
@@ -234,7 +298,13 @@ async function requestPairingCode(socket) {
         let code = await socket.requestPairingCode(global.phoneNumber);
         code = code?.match(/.{1,4}/g)?.join("-") || code;
         log(`\nYour Pairing Code: ${code}\n`, 'white');
-        log(`Please enter this code in WhatsApp app:\n1. Open WhatsApp\n2. Go to Settings => Linked Devices\n3. Tap "Link a Device"\n4. Enter the code shown above`, 'blue');
+        log(`
+Please enter this code in WhatsApp app:
+1. Open WhatsApp
+2. Go to Settings => Linked Devices
+3. Tap "Link a Device"
+4. Enter the code shown above
+        `, 'blue');
         return true;
     } catch (err) {
         log(`Failed to get pairing code: ${err.message}`, 'red', true);
@@ -242,6 +312,7 @@ async function requestPairingCode(socket) {
     }
 }
 
+// Login method
 async function getLoginMethod() {
     const lastMethod = await getLastLoginMethod();
     if (lastMethod && sessionExists()) {
@@ -288,7 +359,7 @@ async function getLoginMethod() {
         let phone = await question(`Your WhatsApp number: `);
         phone = phone.replace(/[^0-9]/g, '');
         if (phone.length < 10 || phone.length > 15) {
-            log('Invalid number. Must be 10-15 digits.', 'red');
+            log('Invalid number. Must be 10-15 digits in international format.', 'red');
             return getLoginMethod();
         }
         global.phoneNumber = phone;
@@ -310,6 +381,7 @@ async function getLoginMethod() {
     }
 }
 
+// Session download
 async function downloadSessionData() {
     try {
         await fs.promises.mkdir(sessionDir, { recursive: true });
@@ -326,23 +398,27 @@ async function downloadSessionData() {
     }
 }
 
+// Session format check
 async function checkAndHandleSessionFormat() {
     const sessionId = process.env.SESSION_ID;
     if (sessionId && sessionId.trim() !== '') {
         if (!sessionId.trim().startsWith('DAVE-AI') && !sessionId.trim().startsWith('DAVE-X')) {
             log('[ERROR]: Invalid SESSION_ID in .env', 'red');
             log('[SESSION ID] MUST start with "DAVE-AI" or "DAVE-X".', 'red');
+
             try {
                 let envContent = fs.readFileSync(envPath, 'utf8');
                 envContent = envContent.replace(/^SESSION_ID=.*$/m, 'SESSION_ID=');
                 fs.writeFileSync(envPath, envContent);
             } catch (e) {}
+
             await delay(5000);
             process.exit(1);
         }
     }
 }
 
+// Welcome message
 async function sendWelcomeMessage(XeonBotInc) {
     if (global.isBotConnected) return;
 
@@ -448,13 +524,14 @@ async function sendWelcomeMessage(XeonBotInc) {
     }
 }
 
-// ========== IMPROVED 408 ERROR HANDLER ==========
+// 408 error handler
 async function handle408Error(statusCode) {
     if (statusCode !== DisconnectReason.connectionTimeout) return false;
 
     global.errorRetryCount++;
     let errorState = loadErrorCount();
-    
+    const MAX_RETRIES = 2;
+
     errorState.count = global.errorRetryCount;
     errorState.last_error_timestamp = Date.now();
     saveErrorCount(errorState);
@@ -471,32 +548,7 @@ async function handle408Error(statusCode) {
     return true;
 }
 
-// ========== SESSION INTEGRITY CHECK ==========
-async function checkSessionIntegrityAndClean() {
-    const isSessionFolderPresent = fs.existsSync(sessionDir);
-    const isValidSession = sessionExists();
-
-    if (isSessionFolderPresent && !isValidSession) {
-        log('⚠️ Detected incomplete/junk session files. Cleaning up...', 'red');
-        clearSessionFiles();
-        log('Cleanup complete. Waiting...', 'yellow');
-        await delay(2000);
-    }
-}
-
-// ========== ENV WATCHER ==========
-function checkEnvStatus() {
-    try {
-        fs.watch(envPath, { persistent: false }, (eventType, filename) => {
-            if (filename && eventType === 'change') {
-                log('[ENV] Change detected - restarting', 'red');
-                process.exit(1);
-            }
-        });
-    } catch (e) {}
-}
-
-// ========== CLEANUP FUNCTIONS ==========
+// Cleanup functions
 function cleanupOldMessages() {
     let storedMessages = loadStoredMessages();
     let now = Math.floor(Date.now() / 1000);
@@ -579,10 +631,35 @@ function cleanOldSessionFiles() {
 cleanOldSessionFiles();
 setInterval(cleanOldSessionFiles, 2 * 60 * 60 * 1000);
 
+// Session integrity check
+async function checkSessionIntegrityAndClean() {
+    const isSessionFolderPresent = fs.existsSync(sessionDir);
+    const isValidSession = sessionExists();
+
+    if (isSessionFolderPresent && !isValidSession) {
+        log('⚠️ Detected incomplete/junk session files. Cleaning up...', 'red');
+        clearSessionFiles();
+        log('Cleanup complete. Waiting...', 'yellow');
+        await delay(2000);
+    }
+}
+
+// Env watcher
+function checkEnvStatus() {
+    try {
+        fs.watch(envPath, { persistent: false }, (eventType, filename) => {
+            if (filename && eventType === 'change') {
+                log('[ENV] Change detected - restarting', 'red');
+                process.exit(1);
+            }
+        });
+    } catch (e) {}
+}
+
 // ========== MAIN BOT FUNCTION ==========
 async function startXeonBotInc() {
     log('Connecting to WhatsApp...', 'cyan');
-    const { version } = await fetchLatestBaileysVersion();
+    const { version, isLatest } = await fetchLatestBaileysVersion();
 
     await fs.promises.mkdir(sessionDir, { recursive: true });
 
@@ -595,12 +672,6 @@ async function startXeonBotInc() {
         useClones: false 
     });
 
-    // Set connection timeout
-    const connectionTimeout = setTimeout(() => {
-        log('❌ Connection timeout after 60 seconds - restarting...', 'red');
-        process.exit(1);
-    }, 60000);
-
     const XeonBotInc = makeWASocket({
         version,
         logger: pino({ level: 'fatal' }),
@@ -610,7 +681,7 @@ async function startXeonBotInc() {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }).child({ level: "fatal" })),
         },
-        markOnlineOnConnect: false,
+        markOnlineOnConnect: false, // Keep as false - user can set via command
         generateHighQualityLinkPreview: false,
         syncFullHistory: false,
         shouldSyncHistoryMessage: () => false,
@@ -645,22 +716,30 @@ async function startXeonBotInc() {
         log('History sync received - skipping to reduce load', 'yellow');
     });
 
-    // ========== MESSAGE HANDLER ==========
+    // ========== MESSAGE HANDLER WITH FIXED ANTI-EDIT/ANTI-DELETE ==========
     XeonBotInc.ev.on('messages.upsert', async chatUpdate => {
         try {
-            if (getMemoryMB() > 320) return;
+            // Skip processing if memory is too high
+            if (getMemoryMB() > 320) {
+                return;
+            }
 
             const mek = chatUpdate.messages[0];
             if (!mek?.message) return;
 
+            // Handle ephemeral messages
             mek.message = (Object.keys(mek.message)[0] === 'ephemeralMessage') ? 
                 mek.message.ephemeralMessage.message : mek.message;
 
+            // CRITICAL: Store message in backup for potential recovery
             if (mek.key?.id && mek.message) {
                 let chatId = mek.key.remoteJid;
                 let messageId = mek.key.id;
-                if (!global.messageBackup[chatId]) global.messageBackup[chatId] = {};
+                if (!global.messageBackup[chatId]) { 
+                    global.messageBackup[chatId] = {}; 
+                }
                 
+                // Store full message object for complete recovery
                 let savedMessage = { 
                     sender: mek.key.participant || mek.key.remoteJid, 
                     message: mek.message,
@@ -673,8 +752,11 @@ async function startXeonBotInc() {
                 }
             }
 
+            // CRITICAL: Handle protocol messages (deletions) FIRST
             if (mek.message?.protocolMessage) {
                 const protocolType = mek.message.protocolMessage.type;
+                
+                // Type 0 = message deletion
                 if (protocolType === 0) {
                     log('📋 Protocol message detected - handling deletion', 'cyan');
                     if (handleMessages) {
@@ -684,7 +766,7 @@ async function startXeonBotInc() {
                             log(e.message, 'red', true); 
                         }
                     }
-                    return;
+                    return; // Stop processing for deletions
                 }
             }
 
@@ -699,11 +781,13 @@ async function startXeonBotInc() {
 
             if (!global.isBotConnected) return;
 
+            // CRITICAL: Wrap message handler in try-catch to prevent crashes
             if (handleMessages) {
                 try {
                     await handleMessages(XeonBotInc, chatUpdate, false);
                 } catch (handlerError) {
                     log(`❌ Message handler error: ${handlerError.message}`, 'red', true);
+                    // Don't throw - just log and continue
                 }
             }
         } catch(e) {
@@ -713,30 +797,13 @@ async function startXeonBotInc() {
 
     // ========== CONNECTION UPDATE HANDLER ==========
     XeonBotInc.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
-
-        if (connection === 'open') {
-            clearTimeout(connectionTimeout);
-            log('✅ Connected', 'green');
-            
-            const botUser = XeonBotInc.user || {};
-            const botNumber = (botUser.id || '').split(':')[0];
-            log(`Number : +${botNumber}`, 'cyan');
-            log(`Platform: Heroku`, 'cyan');
-            log(`Time : ${new Date().toLocaleString()}`, 'cyan');
-
-            if (global.initPresenceOnConnect) {
-                try { global.initPresenceOnConnect(XeonBotInc); } catch(e) {}
-            }
-
-            await sendWelcomeMessage(XeonBotInc);
-        }
+        const { connection, lastDisconnect, qr } = update;
 
         if (connection === 'close') {
-            clearTimeout(connectionTimeout);
             global.isBotConnected = false;
             const statusCode = lastDisconnect?.error?.output?.statusCode;
 
+            // Log the actual error that caused the disconnect
             if (lastDisconnect?.error) {
                 log(`Disconnect reason: ${lastDisconnect.error.message}`, 'red', true);
             }
@@ -752,11 +819,26 @@ async function startXeonBotInc() {
                 const is408Handled = await handle408Error(statusCode);
                 if (is408Handled) return;
 
+                // Add delay based on attempt number
                 const reconnectDelay = global.errorRetryCount > 0 ? 10000 : 5000;
                 log(`Connection closed. Reconnecting in ${reconnectDelay/1000}s... (Attempt ${global.errorRetryCount + 1})`, 'yellow');
                 await delay(reconnectDelay);
                 startXeonBotInc();
             }
+        } else if (connection === 'open') {
+            log('✅ Connected', 'green');
+
+            const botUser = XeonBotInc.user || {};
+            const botNumber = (botUser.id || '').split(':')[0];
+            log(`Number : +${botNumber}`, 'cyan');
+            log(`Platform: Pterodactyl`, 'cyan');
+            log(`Time : ${new Date().toLocaleString()}`, 'cyan');
+
+            if (global.initPresenceOnConnect) {
+                try { global.initPresenceOnConnect(XeonBotInc); } catch(e) {}
+            }
+
+            await sendWelcomeMessage(XeonBotInc);
         }
     });
 
@@ -796,15 +878,15 @@ async function startXeonBotInc() {
                 try {
                     await handleIncomingCall(XeonBotInc, callData);
                 } catch (callErr) {
-                    console.error('Error handling call:', callErr.message);
+                    console.error('Error handling call:', callErr.message, 'Line:', callErr.stack?.split('\n')[1]);
                 }
             }
         } catch (e) {
-            console.error('Error in call event:', e.message);
+            console.error('Error in call event:', e.message, 'Line:', e.stack?.split('\n')[1]);
         }
     });
 
-    // ========== MESSAGES.UPDATE HANDLER FOR EDITS ==========
+    // ========== FIXED MESSAGES.UPDATE HANDLER FOR EDITS ==========
     XeonBotInc.ev.on('messages.update', async (messageUpdates) => {
         if (!global.isBotConnected) return;
         try {
@@ -909,16 +991,19 @@ async function tylor() {
 
 // ========== GLOBAL ERROR HANDLERS ==========
 process.on('uncaughtException', (err) => {
+    // Only log critical errors, don't exit
     if (!err.message.includes('ECONNRESET') && 
         !err.message.includes('socket hang up') &&
         !err.message.includes('chalk')) {
         log(`⚠️ Uncaught Exception: ${err.message}`, 'red', true);
     } else {
+        // Quietly handle chalk errors
         log(`⚠️ Non-critical error: ${err.message}`, 'yellow');
     }
 });
 
 process.on('unhandledRejection', (err) => {
+    // Only log, don't exit
     if (!err.message.includes('ECONNRESET') && 
         !err.message.includes('socket hang up') &&
         !err.message.includes('chalk')) {
