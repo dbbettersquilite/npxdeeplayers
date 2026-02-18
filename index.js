@@ -268,23 +268,22 @@ function sessionExists() {
     return fs.existsSync(credsPath);
 }
 
-const rl = process.stdin.isTTY ? readline.createInterface({ input: process.stdin, output: process.stdout }) : null
-const question = (text) => rl ? new Promise(resolve => rl.question(text, resolve)) : Promise.resolve(settings?.ownerNumber || global.phoneNumber)
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+const question = (text) => new Promise(resolve => rl.question(text, resolve));
 
 async function requestPairingCode(socket) {
     try {
         log("Requesting pairing code...", 'yellow');
-        await delay(2000);
         let code = await socket.requestPairingCode(global.phoneNumber);
         code = code?.match(/.{1,4}/g)?.join("-") || code;
-        log(`\nYour Pairing Code: ${code}\n`, 'white');
-        log(`
-Please enter this code in WhatsApp app:
-1. Open WhatsApp
-2. Go to Settings => Linked Devices
-3. Tap "Link a Device"
-4. Enter the code shown above
-        `, 'blue');
+        log(`\n=============================`, 'cyan');
+        log(`  Your Pairing Code: ${code}`, 'white');
+        log(`=============================\n`, 'cyan');
+        log(`Enter this code in WhatsApp:`, 'blue');
+        log(`1. Open WhatsApp`, 'blue');
+        log(`2. Settings => Linked Devices`, 'blue');
+        log(`3. Tap "Link a Device"`, 'blue');
+        log(`4. Enter the code above`, 'blue');
         return true;
     } catch (err) {
         log(`Failed to get pairing code: ${err.message}`, 'red', true);
@@ -304,21 +303,6 @@ async function getLoginMethod() {
         fs.unlinkSync(loginFile);
     }
 
-    const envPhone = process.env.PHONE_NUMBER?.replace(/[^0-9]/g, '');
-    if (envPhone && envPhone.length >= 10) {
-        log(`Using phone number from environment: +${envPhone}`, 'green');
-        global.phoneNumber = envPhone;
-        await saveLoginMethod('number');
-        return 'number';
-    }
-
-    if (!process.stdin.isTTY) {
-        log("No session found. Set SESSION_ID or PHONE_NUMBER environment variable.", 'red');
-        log("Waiting 30 seconds before exit...", 'yellow');
-        await delay(30000);
-        process.exit(1);
-    }
-
     log("", 'white');
     log("==================================", 'cyan');
     log("     LOGIN METHOD SELECTION       ", 'cyan');
@@ -335,7 +319,7 @@ async function getLoginMethod() {
         log("Enter your WhatsApp number in international format.", 'yellow');
         log("Examples: 254712345678, 12025551234, 447911123456", 'blue');
         log("Do NOT include + sign or spaces.", 'yellow');
-        let phone = await question(`Your WhatsApp number: `);
+        let phone = await question("Your WhatsApp number: ");
         phone = phone.replace(/[^0-9]/g, '');
         if (phone.length < 10 || phone.length > 15) {
             log('Invalid number. Must be 10-15 digits in international format.', 'red');
@@ -345,7 +329,7 @@ async function getLoginMethod() {
         await saveLoginMethod('number');
         return 'number';
     } else if (choice === '2') {
-        let sessionId = await question(`Paste your Session ID: `);
+        let sessionId = await question("Paste your Session ID: ");
         sessionId = sessionId.trim();
         if (!sessionId.includes("DAVE-AI:~") && !sessionId.includes("DAVE-X:~")) {
             log("Invalid Session ID format! Must contain 'DAVE-AI:~' or 'DAVE-X:~'.", 'red');
@@ -409,8 +393,6 @@ async function sendWelcomeMessage(XeonBotInc) {
         const currentMode = data.isPublic ? 'public' : 'private';
         log(`Mode: ${currentMode} | Prefix: ${getPrefix()} | Bot: ${getBotName()}`, 'cyan');
     } catch {}
-
-    await delay(2000);
 
     const detectPlatform = () => {
         if (process.env.DYNO) return "Heroku";
@@ -612,8 +594,7 @@ async function checkSessionIntegrityAndClean() {
     if (isSessionFolderPresent && !isValidSession) {
         log('Detected incomplete/junk session files. Cleaning up...', 'red');
         clearSessionFiles();
-        log('Cleanup complete. Waiting...', 'yellow');
-        await delay(2000);
+        log('Cleanup complete.', 'yellow');
     }
 }
 
@@ -814,12 +795,18 @@ async function startXeonBotInc() {
     XeonBotInc.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        if (qr) {
+        if (qr && !global.phoneNumber) {
             log('QR code generated (not displayed - use pairing code or session ID)', 'yellow');
         }
 
         if (connection === 'connecting') {
             log('Connection state: connecting...', 'cyan');
+            if (global.phoneNumber && !global.pairingCodeRequested && !sessionExists()) {
+                global.pairingCodeRequested = true;
+                setTimeout(async () => {
+                    await requestPairingCode(XeonBotInc);
+                }, 3000);
+            }
         }
 
         if (connection === 'close') {
@@ -836,7 +823,6 @@ async function startXeonBotInc() {
             if (permanentLogout) {
                 log(`Logged out permanently!`, 'white');
                 clearSessionFiles();
-                await delay(2000);
                 process.exit(1);
             } else {
                 const is408Handled = await handle408Error(statusCode);
@@ -979,7 +965,6 @@ async function tylor() {
         }
 
         log("Starting bot...", 'green');
-        await delay(2000);
         await startXeonBotInc();
         checkEnvStatus();
         return;
@@ -991,27 +976,19 @@ async function tylor() {
 
     if (sessionExists()) {
         log("Valid stored session found, starting bot...", 'green');
-        await delay(2000);
         await startXeonBotInc();
         checkEnvStatus();
         return;
     }
 
     const loginMethod = await getLoginMethod();
-    let XeonBotInc;
 
     if (loginMethod === 'session') {
         await downloadSessionData();
-        XeonBotInc = await startXeonBotInc();
+        await startXeonBotInc();
     } else if (loginMethod === 'number') {
-        XeonBotInc = await startXeonBotInc();
-        await requestPairingCode(XeonBotInc);
-    }
-
-    if (loginMethod === 'number' && !sessionExists() && fs.existsSync(sessionDir)) {
-        log('Login failed. Clearing session files...', 'red');
-        clearSessionFiles();
-        process.exit(1);
+        global.pairingCodeRequested = false;
+        await startXeonBotInc();
     }
 
     checkEnvStatus();
