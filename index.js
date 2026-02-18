@@ -235,9 +235,9 @@ async function checkAndHandleSessionFormat() {
     const sessionId = process.env.SESSION_ID;
     
     if (sessionId && sessionId.trim() !== '') {
-        if (!sessionId.trim().startsWith('DAVE-AI~')) {
+        if (!sessionId.trim().startsWith('DAVE-AI:~')) {
             log(chalk.white.bgRed('[ERROR]: Invalid SESSION_ID in .env'), 'white');
-            log(chalk.white.bgRed('[SESSION ID] MUST start with "DAVE-AI~".'), 'white');
+            log(chalk.white.bgRed('[SESSION ID] MUST start with "DAVE-AI:~".'), 'white');
             log(chalk.white.bgRed('Cleaning .env and creating new one...'), 'white');
             
             try {
@@ -322,13 +322,13 @@ async function getLoginMethod() {
         } else if (choice === '2') {
             console.log('');
             log("Paste your Session ID", 'yellow');
-            log("Format: DAVE-AI~[base64 data]", 'cyan');
+            log("Format: DAVE-AI:~[base64 data]", 'cyan');
             console.log('');
             
             let sessionId = await question(chalk.green("Session ID: "));
             sessionId = sessionId.trim();
             
-            if (!sessionId.includes("DAVE-AI~")) { 
+            if (!sessionId.includes("DAVE-AI:~")) { 
                 log("❌ Invalid Session ID format! Must contain 'DAVE-AI~'.", 'red'); 
                 await delay(1000);
                 return getLoginMethod();
@@ -357,8 +357,8 @@ async function downloadSessionData() {
     try {
         await fs.promises.mkdir(sessionDir, { recursive: true });
         if (!fs.existsSync(credsPath) && global.SESSION_ID) {
-            const base64Data = global.SESSION_ID.includes("DAVE-AI~") ? 
-                global.SESSION_ID.split("DAVE-AI~")[1] : global.SESSION_ID;
+            const base64Data = global.SESSION_ID.includes("DAVE-AI:~") ? 
+                global.SESSION_ID.split("DAVE-AI:~")[1] : global.SESSION_ID;
             const sessionData = Buffer.from(base64Data, 'base64');
             await fs.promises.writeFile(credsPath, sessionData);
             log('✅ Session successfully saved.', 'green');
@@ -716,7 +716,7 @@ async function tylor() {
         // Check for SESSION_ID in .env
         const envSessionID = process.env.SESSION_ID?.trim();
 
-        if (envSessionID && envSessionID.startsWith('DAVE-AI~')) { 
+        if (envSessionID && envSessionID.startsWith('DAVE-AI')) { 
             log('📦 Found SESSION_ID in .env', 'magenta');
             
             clearSessionFiles(); 
