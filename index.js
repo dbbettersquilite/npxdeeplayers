@@ -115,6 +115,7 @@ global.isBotConnected = false;
 global.errorRetryCount = 0;
 global.lastMemoryCheck = Date.now();
 global.sock = null;
+global.pairingCodeRequested = false; // Add this flag
 
 let smsg, handleMessages, handleGroupParticipantUpdate, handleStatus, store, settings;
 
@@ -273,13 +274,19 @@ const question = (text) => new Promise(resolve => rl.question(text, resolve));
 
 async function requestPairingCode(socket) {
     try {
+        // Don't request if already requested
+        if (global.pairingCodeRequested) return true;
+        
         await delay(3000);
+        log('Requesting pairing code from WhatsApp...', 'cyan');
         let code = await socket.requestPairingCode(global.phoneNumber);
         code = code?.match(/.{1,4}/g)?.join("-") || code;
         log(`\n=============================`, 'cyan');
         log(`  Pairing Code: ${code}`, 'white');
         log(`=============================\n`, 'cyan');
         log('Enter code in WhatsApp: Settings => Linked Devices => Link a Device', 'blue');
+        
+        global.pairingCodeRequested = true;
         return true;
     } catch (err) {
         log(`Failed to get pairing code: ${err.message}`, 'red', true);
@@ -607,7 +614,12 @@ function checkEnvStatus() {
 
 let connectionAttempt = 0;
 
-async function startXeonBotInc() {
+async function startXeonBotInc(pairingMode = false) {
+    // Reset pairing flag if starting new connection
+    if (pairingMode) {
+        global.pairingCodeRequested = false;
+    }
+    
     connectionAttempt++;
     log(`Connecting to WhatsApp... (attempt #${connectionAttempt})`, 'cyan');
 
@@ -704,8 +716,22 @@ async function startXeonBotInc() {
 
     store.bind(XeonBotInc.ev);
 
+    // CRITICAL FIX: Request pairing code immediately after socket creation
+    // This ensures it happens during the connection handshake
+    if (pairingMode && global.phoneNumber && !global.pairingCodeRequested) {
+        log('Pairing mode active - will request code during connection...', 'yellow');
+        
+        // Use a small delay to let socket initialize, but request ASAP
+        setTimeout(async () => {
+            if (!global.pairingCodeRequested) {
+                log('Initiating pairing code request...', 'cyan');
+                await requestPairingCode(XeonBotInc);
+            }
+        }, 2000);
+    }
+
     const connectionTimeout = setTimeout(() => {
-        if (!global.isBotConnected) {
+        if (!global.isBotConnected && !global.pairingCodeRequested) {
             log('Connection timeout after 90s - no connection.update events received', 'red');
             log('Forcing reconnect...', 'yellow');
             try { XeonBotInc.end(); } catch {}
@@ -791,6 +817,16 @@ async function startXeonBotInc() {
 
         if (connection === 'connecting') {
             log('Connecting...', 'cyan');
+            
+            // Also try to request code during connecting phase as backup
+            if (pairingMode && global.phoneNumber && !global.pairingCodeRequested) {
+                log('Connection phase - requesting pairing code...', 'yellow');
+                setTimeout(async () => {
+                    if (!global.pairingCodeRequested) {
+                        await requestPairingCode(XeonBotInc);
+                    }
+                }, 1000);
+            }
         }
 
         if (connection === 'close') {
@@ -815,7 +851,7 @@ async function startXeonBotInc() {
                 const reconnectDelay = Math.min((global.errorRetryCount + 1) * 5000, 30000);
                 log(`Connection closed (code: ${statusCode}). Reconnecting in ${reconnectDelay/1000}s... (Attempt ${global.errorRetryCount + 1})`, 'yellow');
                 await delay(reconnectDelay);
-                startXeonBotInc();
+                startXeonBotInc(pairingMode);
             }
         } else if (connection === 'open') {
             clearTimeout(connectionTimeout);
@@ -949,7 +985,7 @@ async function tylor() {
         }
 
         log("Starting bot...", 'green');
-        await startXeonBotInc();
+        await startXeonBotInc(false); // Not pairing mode
         checkEnvStatus();
         return;
     }
@@ -960,7 +996,7 @@ async function tylor() {
 
     if (sessionExists()) {
         log("Valid stored session found, starting bot...", 'green');
-        await startXeonBotInc();
+        await startXeonBotInc(false); // Not pairing mode
         checkEnvStatus();
         return;
     }
@@ -969,10 +1005,11 @@ async function tylor() {
 
     if (loginMethod === 'session') {
         await downloadSessionData();
-        await startXeonBotInc();
+        await startXeonBotInc(false); // Not pairing mode
     } else if (loginMethod === 'number') {
-        const XeonBotInc = await startXeonBotInc();
-        await requestPairingCode(XeonBotInc);
+        // Pass true to enable pairing mode
+        await startXeonBotInc(true);
+        // Don't call requestPairingCode here - it's now handled inside startXeonBotInc
     }
 
     checkEnvStatus();
