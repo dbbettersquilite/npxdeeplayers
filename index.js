@@ -116,7 +116,7 @@ global.isBotConnected = false;
 global.errorRetryCount = 0;
 global.lastMemoryCheck = Date.now();
 global.sock = null;
-global.pairingCodeRequested = false; // New flag to prevent multiple pairing requests
+global.pairingCodeRequested = false;
 
 let smsg, handleMessages, handleGroupParticipantUpdate, handleStatus, store, settings;
 
@@ -652,21 +652,21 @@ async function startXeonBotInc() {
         version,
         logger: pinoLogger,
         printQRInTerminal: false,
-        browser: Browsers.ubuntu('Chrome'), // Updated browser config
+        browser: Browsers.ubuntu('Chrome'),
         auth: {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, pinoLogger),
         },
         markOnlineOnConnect: true,
-        generateHighQualityLinkPreview: true, // Changed to true
+        generateHighQualityLinkPreview: true,
         syncFullHistory: false,
         fireInitQueries: true,
         emitOwnEvents: false,
-        connectTimeoutMs: 60000, // Increased timeout
-        keepAliveIntervalMs: 15000, // Added keep alive
+        connectTimeoutMs: 60000,
+        keepAliveIntervalMs: 15000,
         retryRequestDelayMs: 250,
-        defaultQueryTimeoutMs: 30000, // Added default timeout
-        maxRetries: 5, // Added max retries
+        defaultQueryTimeoutMs: 30000,
+        maxRetries: 5,
         getMessage: async (key) => {
             try {
                 if (key?.id) {
@@ -717,23 +717,103 @@ async function startXeonBotInc() {
     const XeonBotInc = makeWASocket(socketConfig);
     log('Socket created, waiting for events...', 'cyan');
 
-    store.bind(XeonBotInc.ev);
+    if (store && store.bind) {
+        store.bind(XeonBotInc.ev);
+    }
 
-    // FIXED: Request pairing code immediately after socket creation if using number login
+    // FIXED: Request pairing code with better error handling
     if (global.phoneNumber && !global.pairingCodeRequested && !sessionExists()) {
-        // Don't wait for connection, request code immediately after socket creation
+        log('Pairing mode detected - will request code in 5 seconds...', 'yellow');
+        
         setTimeout(async () => {
-            await requestPairingCode(XeonBotInc);
-        }, 3000); // Small delay to let socket initialize
+            try {
+                log('Initiating pairing code request...', 'cyan');
+                const success = await requestPairingCode(XeonBotInc);
+                if (success) {
+                    log('✅ Pairing code sent! Please check the console above.', 'green');
+                    log('⏳ Waiting for you to link your device...', 'cyan');
+                } else {
+                    log('❌ Failed to request pairing code. Will retry...', 'yellow');
+                    setTimeout(async () => {
+                        await requestPairingCode(XeonBotInc);
+                    }, 10000);
+                }
+            } catch (err) {
+                log(`❌ Error in pairing: ${err.message}`, 'red', true);
+            }
+        }, 5000);
     }
 
     const connectionTimeout = setTimeout(() => {
-        if (!global.isBotConnected && !global.pairingCodeRequested) {
-            log('Connection timeout after 90s - no connection.update events received', 'red');
-            log('Forcing reconnect...', 'yellow');
-            try { XeonBotInc.end(); } catch {}
+        if (!global.isBotConnected) {
+            log('⚠️ Connection taking longer than expected...', 'yellow');
+            if (global.phoneNumber && !global.pairingCodeRequested) {
+                log('If you haven\'t received a pairing code, the bot may be stuck. Restart manually.', 'red');
+            }
         }
     }, 90000);
+
+    XeonBotInc.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (connection === 'connecting') {
+            log('Connecting...', 'cyan');
+        }
+
+        if (qr) {
+            log('QR code received (ignoring, using pairing code)', 'yellow');
+        }
+
+        if (connection === 'close') {
+            clearTimeout(connectionTimeout);
+            global.isBotConnected = false;
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+
+            if (lastDisconnect?.error) {
+                log(`Disconnect reason: ${lastDisconnect.error.message} (code: ${statusCode})`, 'red', true);
+            }
+
+            const permanentLogout = statusCode === DisconnectReason.loggedOut || statusCode === 401;
+
+            if (permanentLogout) {
+                log(`Logged out permanently!`, 'white');
+                clearSessionFiles();
+                process.exit(1);
+            } else {
+                const is408Handled = await handle408Error(statusCode);
+                if (is408Handled) return;
+
+                const reconnectDelay = Math.min((global.errorRetryCount + 1) * 5000, 30000);
+                log(`Connection closed (code: ${statusCode}). Reconnecting in ${reconnectDelay/1000}s... (Attempt ${global.errorRetryCount + 1})`, 'yellow');
+                await delay(reconnectDelay);
+                startXeonBotInc();
+            }
+        } else if (connection === 'open') {
+            clearTimeout(connectionTimeout);
+            log('✅ Connected to WhatsApp!', 'green');
+
+            connectionAttempt = 0;
+            global.pairingCodeRequested = false;
+
+            const botUser = XeonBotInc.user || {};
+            const botNumber = (botUser.id || '').split(':')[0];
+            log(`📱 Number : +${botNumber}`, 'cyan');
+
+            const detectPlatform = () => {
+                if (process.env.DYNO) return "Heroku";
+                if (process.env.P_SERVER_UUID) return "Panel";
+                return os.platform();
+            };
+            log(`💻 Platform: ${detectPlatform()}`, 'cyan');
+            log(`🕐 Time : ${new Date().toLocaleString()}`, 'cyan');
+
+            if (global.initPresenceOnConnect) {
+                try { global.initPresenceOnConnect(XeonBotInc); } catch(e) {}
+            }
+
+            await sendWelcomeMessage(XeonBotInc);
+        }
+    });
 
     XeonBotInc.ev.on('messaging-history.set', () => {
         log('History sync received - skipping to reduce load', 'yellow');
@@ -806,64 +886,6 @@ async function startXeonBotInc() {
             }
         } catch(e) {
             log(`Msg handler error: ${e.message}`, 'red', true);
-        }
-    });
-
-    XeonBotInc.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (connection === 'connecting') {
-            log('Connecting...', 'cyan');
-        }
-
-        if (connection === 'close') {
-            clearTimeout(connectionTimeout);
-            global.isBotConnected = false;
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-
-            if (lastDisconnect?.error) {
-                log(`Disconnect reason: ${lastDisconnect.error.message} (code: ${statusCode})`, 'red', true);
-            }
-
-            const permanentLogout = statusCode === DisconnectReason.loggedOut || statusCode === 401;
-
-            if (permanentLogout) {
-                log(`Logged out permanently!`, 'white');
-                clearSessionFiles();
-                process.exit(1);
-            } else {
-                const is408Handled = await handle408Error(statusCode);
-                if (is408Handled) return;
-
-                const reconnectDelay = Math.min((global.errorRetryCount + 1) * 5000, 30000);
-                log(`Connection closed (code: ${statusCode}). Reconnecting in ${reconnectDelay/1000}s... (Attempt ${global.errorRetryCount + 1})`, 'yellow');
-                await delay(reconnectDelay);
-                startXeonBotInc();
-            }
-        } else if (connection === 'open') {
-            clearTimeout(connectionTimeout);
-            log('Connected to WhatsApp!', 'green');
-
-            connectionAttempt = 0;
-            global.pairingCodeRequested = false; // Reset flag
-
-            const botUser = XeonBotInc.user || {};
-            const botNumber = (botUser.id || '').split(':')[0];
-            log(`Number : +${botNumber}`, 'cyan');
-
-            const detectPlatform = () => {
-                if (process.env.DYNO) return "Heroku";
-                if (process.env.P_SERVER_UUID) return "Panel";
-                return os.platform();
-            };
-            log(`Platform: ${detectPlatform()}`, 'cyan');
-            log(`Time : ${new Date().toLocaleString()}`, 'cyan');
-
-            if (global.initPresenceOnConnect) {
-                try { global.initPresenceOnConnect(XeonBotInc); } catch(e) {}
-            }
-
-            await sendWelcomeMessage(XeonBotInc);
         }
     });
 
@@ -995,9 +1017,9 @@ async function tylor() {
         await downloadSessionData();
         await startXeonBotInc();
     } else if (loginMethod === 'number') {
-        log("Creating socket for pairing code...", 'cyan');
-        const XeonBotInc = await startXeonBotInc(); // Socket created, pairing requested inside
-        // Pairing code is now requested in the socket creation flow
+        log("Starting bot in pairing mode...", 'cyan');
+        const XeonBotInc = await startXeonBotInc();
+        // Pairing code will be requested inside startXeonBotInc
     }
 
     checkEnvStatus();
