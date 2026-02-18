@@ -273,17 +273,13 @@ const question = (text) => new Promise(resolve => rl.question(text, resolve));
 
 async function requestPairingCode(socket) {
     try {
-        log("Requesting pairing code...", 'yellow');
+        await delay(3000);
         let code = await socket.requestPairingCode(global.phoneNumber);
         code = code?.match(/.{1,4}/g)?.join("-") || code;
         log(`\n=============================`, 'cyan');
-        log(`  Your Pairing Code: ${code}`, 'white');
+        log(`  Pairing Code: ${code}`, 'white');
         log(`=============================\n`, 'cyan');
-        log(`Enter this code in WhatsApp:`, 'blue');
-        log(`1. Open WhatsApp`, 'blue');
-        log(`2. Settings => Linked Devices`, 'blue');
-        log(`3. Tap "Link a Device"`, 'blue');
-        log(`4. Enter the code above`, 'blue');
+        log('Enter code in WhatsApp: Settings => Linked Devices => Link a Device', 'blue');
         return true;
     } catch (err) {
         log(`Failed to get pairing code: ${err.message}`, 'red', true);
@@ -647,17 +643,15 @@ async function startXeonBotInc() {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, pinoLogger),
         },
-        markOnlineOnConnect: false,
+        markOnlineOnConnect: true,
         generateHighQualityLinkPreview: false,
         syncFullHistory: false,
-        shouldSyncHistoryMessage: () => false,
         fireInitQueries: true,
-        emitOwnEvents: true,
-        connectTimeoutMs: 60000,
+        emitOwnEvents: false,
+        connectTimeoutMs: 30000,
         keepAliveIntervalMs: 25000,
-        retryRequestDelayMs: 2000,
-        defaultQueryTimeoutMs: 30000,
-        qrTimeout: 40000,
+        retryRequestDelayMs: 250,
+        defaultQueryTimeoutMs: undefined,
         getMessage: async (key) => {
             try {
                 if (key?.id) {
@@ -678,7 +672,7 @@ async function startXeonBotInc() {
                     } catch {}
                 }
             } catch (e) {}
-            return undefined;
+            return "";
         },
         msgRetryCounterCache,
         patchMessageBeforeSending: (message) => {
@@ -795,18 +789,8 @@ async function startXeonBotInc() {
     XeonBotInc.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        if (qr && !global.phoneNumber) {
-            log('QR code generated (not displayed - use pairing code or session ID)', 'yellow');
-        }
-
         if (connection === 'connecting') {
-            log('Connection state: connecting...', 'cyan');
-            if (global.phoneNumber && !global.pairingCodeRequested && !sessionExists()) {
-                global.pairingCodeRequested = true;
-                setTimeout(async () => {
-                    await requestPairingCode(XeonBotInc);
-                }, 3000);
-            }
+            log('Connecting...', 'cyan');
         }
 
         if (connection === 'close') {
@@ -987,8 +971,8 @@ async function tylor() {
         await downloadSessionData();
         await startXeonBotInc();
     } else if (loginMethod === 'number') {
-        global.pairingCodeRequested = false;
-        await startXeonBotInc();
+        const XeonBotInc = await startXeonBotInc();
+        await requestPairingCode(XeonBotInc);
     }
 
     checkEnvStatus();
